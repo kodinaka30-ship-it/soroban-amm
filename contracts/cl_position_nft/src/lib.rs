@@ -38,6 +38,8 @@ pub enum NftError {
     NoPendingAdmin = 9,
     WrongAdmin = 10,
     InvalidAddress = 11,
+    /// `mint` supplied a pool address other than the registered `cl_pool`.
+    PoolMismatch = 12,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -341,7 +343,10 @@ impl ClPositionNft {
         lower_tick: i32,
         upper_tick: i32,
     ) -> Result<u64, NftError> {
-        Self::require_pool(&env)?;
+        let registered_pool = Self::require_pool(&env)?;
+        if pool != registered_pool {
+            return Err(NftError::PoolMismatch);
+        }
 
         // #697: cap growth of the O(1) index itself (defence in depth on top
         // of the O(1) cost fix — see MAX_POSITIONS_PER_OWNER's doc comment).
@@ -1095,6 +1100,27 @@ mod tests {
         assert_eq!(meta.pool, pool);
         assert_eq!(meta.lower_tick, -500);
         assert_eq!(meta.upper_tick, 500);
+    }
+
+    #[test]
+    fn mint_rejects_pool_other_than_registered_pool() {
+        let (env, client, _admin, _pool, user) = setup();
+        let other_pool = Address::generate(&env);
+
+        assert_eq!(
+            client.try_mint(&user, &other_pool, &-100, &100),
+            Err(Ok(NftError::PoolMismatch))
+        );
+        assert_eq!(client.total_supply(), 0);
+    }
+
+    #[test]
+    fn mint_metadata_pool_matches_registered_pool() {
+        let (_, client, _admin, pool, user) = setup();
+        let id = client.mint(&user, &pool, &-100, &100);
+
+        assert_eq!(client.position_meta(&id).pool, client.cl_pool());
+        assert_eq!(client.position_meta(&id).pool, pool);
     }
 
     // ── burn ─────────────────────────────────────────────────────────────────

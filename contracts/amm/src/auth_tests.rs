@@ -67,16 +67,27 @@ fn assert_auth_err(env: &Env, invoke: &MockAuthInvoke, context: &str) {
 /// 2. Only a stranger's authorization -> `Error(Auth, InvalidAction)`.
 /// 3. Only `signer_expected`'s authorization -> succeeds.
 fn assert_requires_auth(env: &Env, signer_expected: &Address, invoke: &MockAuthInvoke) {
+    assert_requires_auth_with_rejection_check(env, signer_expected, invoke, || {});
+}
+
+fn assert_requires_auth_with_rejection_check(
+    env: &Env,
+    signer_expected: &Address,
+    invoke: &MockAuthInvoke,
+    mut check_rejected_state: impl FnMut(),
+) {
     let stranger = Address::generate(env);
 
     env.set_auths(&[]);
     assert_auth_err(env, invoke, "no authorizations");
+    check_rejected_state();
 
     env.mock_auths(&[MockAuth {
         address: &stranger,
         invoke,
     }]);
     assert_auth_err(env, invoke, "a stranger's authorization");
+    check_rejected_state();
 
     env.mock_auths(&[MockAuth {
         address: signer_expected,
@@ -118,6 +129,180 @@ impl Fixture {
         };
         assert_requires_auth(self.env(), signer, &invoke);
     }
+
+    fn add_funded_provider(&self) -> (Address, i128) {
+        let provider = Address::generate(self.env());
+        soroban_sdk::token::StellarAssetClient::new(self.env(), &self.ts.ta_addr)
+            .mint(&provider, &1_000_000);
+        soroban_sdk::token::StellarAssetClient::new(self.env(), &self.ts.tb_addr)
+            .mint(&provider, &1_000_000);
+        let shares = self
+            .client()
+            .add_liquidity(&provider, &100_000, &100_000, &0, &u64::MAX);
+        (provider, shares)
+    }
+
+    fn check_fund_entrypoint<A: IntoVal<Env, soroban_sdk::Vec<Val>>>(
+        &self,
+        signer: &Address,
+        fn_name: &'static str,
+        args: A,
+        share_holder: &Address,
+    ) {
+        let invoke = MockAuthInvoke {
+            contract: &self.ts.amm_addr,
+            fn_name,
+            args: args.into_val(self.env()),
+            sub_invokes: &[],
+        };
+        let before = self.user_pool_state(share_holder);
+        assert_requires_auth_with_rejection_check(
+            self.env(),
+            signer,
+            &invoke,
+            || assert_eq!(self.user_pool_state(share_holder), before),
+        );
+    }
+
+    fn user_pool_state(&self, share_holder: &Address) -> (i128, i128, i128, i128) {
+        let info = self.client().get_info();
+        (
+            info.reserve_a,
+            info.reserve_b,
+            info.total_shares,
+            self.client().shares_of(share_holder).unwrap(),
+        )
+    }
+}
+
+fn funded_fixture() -> (Fixture, Address, i128) {
+    let f = Fixture::new();
+    seed_pool(&f.ts);
+    let (provider, shares) = f.add_funded_provider();
+    (f, provider, shares)
+}
+
+#[test]
+fn test_swap_requires_trader_auth_without_state_change() {
+    let (f, trader, _) = funded_fixture();
+    f.check_fund_entrypoint(
+        &trader,
+        "swap",
+        (
+            trader.clone(),
+            f.ts.ta_addr.clone(),
+            1_000_i128,
+            0_i128,
+            u64::MAX,
+        ),
+        &trader,
+    );
+}
+
+#[test]
+fn test_swap_exact_out_requires_trader_auth_without_state_change() {
+    let (f, trader, _) = funded_fixture();
+    f.check_fund_entrypoint(
+        &trader,
+        "swap_exact_out",
+        (
+            trader.clone(),
+            f.ts.tb_addr.clone(),
+            1_000_i128,
+            10_000_i128,
+            u64::MAX,
+        ),
+        &trader,
+    );
+}
+
+#[test]
+fn test_swap_fot_requires_trader_auth_without_state_change() {
+    let (f, trader, _) = funded_fixture();
+    f.check_fund_entrypoint(
+        &trader,
+        "swap_fot",
+        (
+            trader.clone(),
+            f.ts.ta_addr.clone(),
+            1_000_i128,
+            0_i128,
+            0_i128,
+            u64::MAX,
+            Option::<Address>::None,
+        ),
+        &trader,
+    );
+}
+
+#[test]
+fn test_add_liquidity_requires_provider_auth_without_state_change() {
+    let (f, provider, _) = funded_fixture();
+    f.check_fund_entrypoint(
+        &provider,
+        "add_liquidity",
+        (
+            provider.clone(),
+            1_000_i128,
+            1_000_i128,
+            0_i128,
+            u64::MAX,
+        ),
+        &provider,
+    );
+}
+
+#[test]
+fn test_add_liquidity_fot_requires_provider_auth_without_state_change() {
+    let (f, provider, _) = funded_fixture();
+    f.check_fund_entrypoint(
+        &provider,
+        "add_liquidity_fot",
+        (
+            provider.clone(),
+            1_000_i128,
+            1_000_i128,
+            0_i128,
+            0_i128,
+            0_i128,
+            u64::MAX,
+        ),
+        &provider,
+    );
+}
+
+#[test]
+fn test_remove_liquidity_requires_provider_auth_without_state_change() {
+    let (f, provider, shares) = funded_fixture();
+    f.check_fund_entrypoint(
+        &provider,
+        "remove_liquidity",
+        (
+            provider.clone(),
+            shares / 10,
+            0_i128,
+            0_i128,
+            u64::MAX,
+        ),
+        &provider,
+    );
+}
+
+#[test]
+fn test_remove_liquidity_one_sided_requires_provider_auth_without_state_change() {
+    let (f, provider, shares) = funded_fixture();
+    f.check_fund_entrypoint(
+        &provider,
+        "remove_liquidity_one_sided",
+        (
+            provider.clone(),
+            shares / 10,
+            f.ts.ta_addr.clone(),
+            0_i128,
+            u64::MAX,
+        ),
+        &provider,
+    );
 }
 
 #[test]

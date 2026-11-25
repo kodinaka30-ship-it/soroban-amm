@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `packages/ui-components`: governance proposal statuses now mirror the nine contract lifecycle states. Abstain votes count toward turnout and snapshot-based quorum, analytics no longer invent turnout or timing data, and empty embeds show an empty state. Seed proposals are exported as `demoProposals` for examples and tests.
 
 ### Fixed
+- `amm` adds negative-authorization regression tests for all seven fund-moving entrypoints, including FOT paths (#1295).
+- `concentrated_liquidity` blocks position-NFT detachment until all tokenized positions are burned (#1310).
+- `concentrated_liquidity` replaces the sorted tick-word index with a paged bitmap and one-time legacy migration, keeping mint index updates bounded as active words grow (#1311).
+- `cl_position_nft::mint` rejects metadata naming any pool other than the registered `cl_pool`, with `NftError::PoolMismatch = 12` (#1316).
 - The TypeScript SDK's `FactoryClient.createPool` now returns named pool and optional governance addresses in its confirmed transaction result (#1382).
 - The health dashboard's 24-hour heatmap now reports swap volume in the pool's quote token for both trade directions (#1378).
 - `amm::remove_liquidity` no longer checks the pause flag, so a paused pool (admin pause or a circuit breaker trip) cannot trap LP funds (#1172). `remove_liquidity_one_sided` stays blocked while paused: it swaps against the reserves, so leaving it open would let trading continue through a pause. Swaps, deposits and flash loans are unchanged. The new `exits_allowed_when_paused()` view returns `true` to confirm that `remove_liquidity` stays open for integrators and UIs.

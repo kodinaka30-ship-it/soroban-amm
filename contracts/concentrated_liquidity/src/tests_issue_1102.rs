@@ -157,6 +157,61 @@ fn test_extreme_ticks_walk_inside_instruction_budget() {
     assert_eq!(prev_tick, Some(tick_low + 10));
 }
 
+fn mint_cost_with_active_bitmap_words(active_word_count: i32) -> u64 {
+    let te = setup_test();
+    let provider = Address::generate(&te.env);
+    StellarAssetClient::new(&te.env, &te.token_a).mint(&provider, &1_000_000);
+
+    te.env.as_contract(&te.pool_addr, || {
+        let mut root = 0_u128;
+        for i in 0..active_word_count {
+            let word_pos = 6 + i;
+            let offset = word_pos - crate::MIN_BITMAP_WORD_POS;
+            let page = offset / 128;
+            let bit_pos = (offset % 128) as u32;
+            let page_key = DataKey::TickBitmapIndexPage(page);
+            let page_bits = te
+                .env
+                .storage()
+                .persistent()
+                .get::<_, u128>(&page_key)
+                .unwrap_or(0);
+            te.env
+                .storage()
+                .persistent()
+                .set(&page_key, &(page_bits | (1_u128 << bit_pos)));
+            te.env.storage().persistent().set(
+                &DataKey::TickBitmap(word_pos),
+                &1_u128,
+            );
+            root |= 1_u128 << page;
+        }
+        te.env
+            .storage()
+            .persistent()
+            .set(&DataKey::TickBitmapIndexRoot, &root);
+    });
+
+    te.env.budget().reset_default();
+    te.client
+        .mint_position(&provider, &700, &710, &100_000, &0, &0, &0, &u64::MAX);
+    te.env.budget().cpu_instruction_cost()
+}
+
+#[test]
+fn test_mint_cost_independent_of_active_bitmap_word_count() {
+    const COST_RATIO_CEILING: f64 = 60.0;
+    let small_cost = mint_cost_with_active_bitmap_words(5);
+    let large_cost = mint_cost_with_active_bitmap_words(500);
+
+    assert!(small_cost > 0 && large_cost > 0);
+    let ratio = large_cost as f64 / small_cost as f64;
+    assert!(
+        ratio < COST_RATIO_CEILING,
+        "expected mint cost to be independent of active bitmap word count, got ratio {ratio} (small={small_cost}, large={large_cost})"
+    );
+}
+
 #[test]
 fn test_persistent_ttl_advance_and_walk_extends_ttl() {
     let te = setup_test();
@@ -201,6 +256,47 @@ fn test_uninitialized_tick_query_does_not_trap() {
         te.client.try_get_tick_info(&12_345),
         Err(Ok(ClError::TickNotInitialized))
     );
+}
+
+#[test]
+fn test_legacy_bitmap_word_index_migrates_on_first_lookup() {
+    let te = setup_test();
+    te.env.as_contract(&te.pool_addr, || {
+        te.env
+            .storage()
+            .instance()
+            .remove(&DataKey::TickBitmapIndexMigrated);
+        let mut legacy_words = soroban_sdk::Vec::new(&te.env);
+        legacy_words.push_back(-1_i32);
+        legacy_words.push_back(2_i32);
+        te.env
+            .storage()
+            .persistent()
+            .set(&DataKey::TickBitmapWords, &legacy_words);
+        te.env
+            .storage()
+            .persistent()
+            .set(&DataKey::TickBitmap(-1), &1_u128);
+        te.env
+            .storage()
+            .persistent()
+            .set(&DataKey::TickBitmap(2), &1_u128);
+    });
+
+    assert_eq!(te.client.next_initialized_tick_pub(&-1_i32), Some(256_i32));
+    te.env.as_contract(&te.pool_addr, || {
+        assert!(!te
+            .env
+            .storage()
+            .persistent()
+            .has(&DataKey::TickBitmapWords));
+        assert!(te
+            .env
+            .storage()
+            .persistent()
+            .has(&DataKey::TickBitmapIndexRoot));
+    });
+    assert_eq!(te.client.next_initialized_tick_pub(&-1_i32), Some(256_i32));
 }
 
 #[test]

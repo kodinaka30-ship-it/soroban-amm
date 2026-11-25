@@ -8543,6 +8543,11 @@
               "doc": "",
               "name": "InvalidAddress",
               "value": 11
+            },
+            {
+              "doc": "mint supplied a pool address other than the registered `cl_pool`.",
+              "name": "PoolMismatch",
+              "value": 12
             }
           ],
           "doc": "",
